@@ -40,3 +40,7 @@ In the desktop app, where `/plugin` does not run: click + next to the prompt box
 claude --plugin-dir ./effort-advisor
 claude plugin test ./effort-advisor
 ```
+
+## License
+
+MIT
