@@ -1,0 +1,6 @@
+{
+  "name": "effort-advisor",
+  "version": "0.1.0",
+  "description": "Suggests a better effort level for each new task, with reasons, and lets you choose.",
+  "types": "./types/index.d.ts"
+}

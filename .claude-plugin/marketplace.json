@@ -1,0 +1,5 @@
+{
+  "name": "sasagar-claude-mods",
+  "owner": { "name": "sasagar" },
+  "plugins": [{ "name": "effort-advisor", "source": "./effort-advisor" }]
+}
