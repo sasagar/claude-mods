@@ -41,16 +41,6 @@ claude --plugin-dir ./effort-advisor
 claude plugin test ./effort-advisor
 ```
 
-### Commit identity (maintainer)
-
-After cloning on a new machine, run once:
-
-```
-./scripts/setup-git-identity.sh
-```
-
-It sets this repository's author to `SASAPIYO` with the GitHub noreply address and turns on GPG signing (repository-local config only), then checks that the signing key is present, carries that address, and can sign.
-
 ## License
 
 MIT
