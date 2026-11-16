@@ -47,3 +47,18 @@ test('task boundaries', async () => {
   expect(isTaskBoundary({ text: 'はい', turns: 0, idleMs: null }, C).ok).toBe(true)
   expect(isTaskBoundary({ text: 'はい', turns: 3, idleMs: 11 * 60_000 }, C).ok).toBe(true)
 })
+
+test('asked for (force): advises within the accept range, but not when already there', async () => {
+  // The user's case: a short question judged low, current medium (in range).
+  const v = classifyByRules({ text: 'これで有効になりましたか？', model: 'claude-opus-5-5' }, C) as Verdict
+  expect(v.level).toBe('low')
+  expect(buildAdvice(v, 'medium', C).advice).toBe(null)
+  const forced = buildAdvice(v, 'medium', C, { force: true }).advice
+  expect(forced?.to).toBe('low')
+  expect(forced?.message).toContain('理由：')
+  expect(forced?.message).toContain('推奨範囲内')
+  expect(buildAdvice(v, 'low', C, { force: true }).advice).toBe(null)
+  // Low confidence one-step gap: still offered when asked for.
+  const weak: Verdict = { level: 'high', accept: ['high'], confidence: 0.3, hits: [], notes: [], scores: {}, chars: 10, files: 0 }
+  expect(buildAdvice(weak, 'medium', C, { force: true }).advice).toBe(null) // no hit to explain it
+})

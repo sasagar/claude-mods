@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Register } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Snapshot } from '../types'
 import {
@@ -39,6 +39,20 @@ function evidence(verdict: Verdict, current: Level, side: 'up' | 'down'): string
     .map(h => `${h.rule.id} → ${h.rule.level}（スコア ${h.score.toFixed(2)}、検出: ${h.matched.join(' ')}）`)
 }
 
+/** The change dialog. Dismissed, or nobody to ask (-p): keep. */
+async function askChange($: EngineInterface, message: string, to: Level): Promise<'change' | 'keep' | 'mute'> {
+  const change = `${to} に変更`
+  try {
+    const answer = await $.ui.ask(`${message}\n\neffort を変更しますか？`, {
+      options: [change, OPT_KEEP, OPT_MUTE],
+      header: 'effort',
+    })
+    return answer === change ? 'change' : answer === OPT_MUTE ? 'mute' : 'keep'
+  } catch {
+    return 'keep'
+  }
+}
+
 function statusLine(s: Snapshot): string | undefined {
   if (s.display !== 'status' && s.display !== 'both') return undefined
   return `${shortModel(s.model)} / effort ${s.current} / 推奨 ${s.recommended ?? '—'}${s.isMismatch ? ' ⚠ 不一致' : ''}`
@@ -56,13 +70,16 @@ export const register: Register = on => {
   let pendingCommand: Level | null = null
   // What the last main-loop request was sent with, after this mod's rewrite.
   let lastSent: string | null = null
+  // The last judgment, for /effort-advise ask.
+  let lastVerdict: Verdict | null = null
+  let lastConfig: Config = DEFAULT_CONFIG
 
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     await $.command.register({
       name: 'effort-advise',
-      description: '直近の effort 判定の理由を表示（config: 設定ファイルを作成 / reset: 再び聞く）',
-      argumentHint: '[config|reset]',
+      description: '直近の effort 判定の理由を表示（ask: 変更するか確認 / config: 設定ファイルを作成 / reset: 再び聞く）',
+      argumentHint: '[ask|config|reset]',
     })
     const model = await $.session.model()
     const env = await $.env.get('CLAUDE_EFFORT')
@@ -121,6 +138,8 @@ export const register: Register = on => {
     const turns = await $.session.turns()
 
     const verdict = await classifier({ text: e.text, model }, config)
+    lastVerdict = verdict
+    lastConfig = config
     const { advice, why } = buildAdvice(verdict, current, config)
     const boundary = isTaskBoundary({ text: e.text, turns, idleMs }, config)
     if (boundary.ok) isDeclinedThisTask = false
@@ -167,23 +186,14 @@ export const register: Register = on => {
 
     if (shouldAsk && advice) {
       lastSuggested = { level: advice.to, count: promptCount, at: now }
-      const change = `${advice.to} に変更`
-      let answer = OPT_KEEP
-      try {
-        answer = await $.ui.ask(`${advice.message}\n\neffort を変更しますか？`, {
-          options: [change, OPT_KEEP, OPT_MUTE],
-          header: 'effort',
-        })
-      } catch {
-        // Dismissed, or nobody to ask (-p): keep the current level.
-      }
+      const answer = await askChange($, advice.message, advice.to)
 
-      if (answer === change) {
+      if (answer === 'change') {
         override = advice.to
         pendingCommand = config.applyMode === 'command' ? advice.to : null
         const after = await update($, snapshot, s => (s ? { ...s, current: advice.to, isMismatch: false, decision: `${advice.to} に変更を選択` } : s))
         $.ui.status(after ? statusLine(after) : undefined)
-      } else if (answer === OPT_MUTE) {
+      } else if (answer === 'mute') {
         isMuted = true
         await update($, snapshot, s => (s ? { ...s, decision: 'このセッションでは聞かない を選択' } : s))
       } else {
@@ -239,15 +249,37 @@ export const register: Register = on => {
         return { text: `既定の設定を書き出しました: ${path}\n判定ルール（rules）・キーワード・理由テンプレート（reason / ifUp / ifDown）・クールダウン（cooldown）を編集できます。次のプロンプトから反映されます。` }
       }
     }
+    if (arg === 'ask') {
+      const s = await read($, snapshot)
+      if (!lastVerdict || !s || s.at === 0) return { text: 'まだプロンプトを判定していません。' }
+      // Judge against the level in force now (a choice since then counts).
+      if (!isLevel(s.current)) return { text: '現在の effort が分かりません。' }
+      const current = s.current
+      const { advice, why } = buildAdvice(lastVerdict, current, lastConfig, { force: true })
+      if (!advice) return { text: `変更の提案はありません（${why}）。` }
+      const answer = await askChange($, advice.message, advice.to)
+      if (answer === 'change') {
+        override = advice.to
+        pendingCommand = lastConfig.applyMode === 'command' ? advice.to : null
+        const after = await update($, snapshot, x => (x ? { ...x, current: advice.to, isMismatch: false, decision: `${advice.to} に変更を選択（/effort-advise ask）` } : x))
+        $.ui.status(after ? statusLine(after) : undefined)
+        return { text: `次のリクエストから ${advice.to} で送ります。` }
+      }
+      if (answer === 'mute') {
+        isMuted = true
+        return { text: 'このセッションでは自動の提案をしません（/effort-advise ask と reset は使えます）。' }
+      }
+      return { text: `${current} のまま続けます。` }
+    }
     if (arg === 'reset') {
       isMuted = false
       isDeclinedThisTask = false
       lastSuggested = null
-      return { text: 'effort-advisor: 提案の抑止を解除しました。' }
+      return { text: '提案の抑止を解除しました。' }
     }
 
     const s = await read($, snapshot)
-    if (!s || s.at === 0) return { text: 'effort-advisor: まだプロンプトを判定していません。' }
+    if (!s || s.at === 0) return { text: 'まだプロンプトを判定していません。' }
     const lines = [
       `直近の判定（"${s.prompt}${s.prompt.length >= 80 ? '…' : ''}"）`,
       `  モデル: ${shortModel(s.model)} / 現在: ${s.current} / 推奨: ${s.recommended ?? '—'} / 確信度: ${s.confidence}`,
@@ -264,6 +296,7 @@ export const register: Register = on => {
       ...(s.downEvidence.length ? s.downEvidence.map(r => `  - ${r}`) : ['  （なし）']),
       ...(s.message ? ['', '提案文:', ...s.message.split('\n').map(l => `  ${l}`)] : []),
       '',
+      ...(s.recommended !== null && s.recommended !== s.current ? ['', `変更するか確認するには /effort-advise ask`] : []),
       `設定: ${path}（/effort-advise config で作成、/effort-advise reset で抑止を解除）`,
     ]
     return { text: lines.join('\n') }

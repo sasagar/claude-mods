@@ -188,13 +188,19 @@ export function buildAdvice(
   verdict: Verdict,
   current: Level,
   config: Config,
+  opts: { force?: boolean } = {},
 ): { advice: Advice | null; why: string } {
+  // force: asked for by the user (/effort-advise ask), so the noise gates
+  // (accept range, confidence) do not apply; only "already there" does.
+  const force = opts.force === true
   if (!verdict.level) return { advice: null, why: '判定できる特徴がない' }
-  if (verdict.accept.includes(current)) return { advice: null, why: `現在の ${current} は推奨範囲内` }
-  if (verdict.confidence < config.minConfidence)
+  if (verdict.level === current) return { advice: null, why: `現在の ${current} は推奨と一致` }
+  const inRange = verdict.accept.includes(current)
+  if (!force && inRange) return { advice: null, why: `現在の ${current} は推奨範囲内` }
+  if (!force && verdict.confidence < config.minConfidence)
     return { advice: null, why: `確信度 ${verdict.confidence} が閾値 ${config.minConfidence} 未満` }
   const gap = idx(verdict.level) - idx(current)
-  if (Math.abs(gap) === 1 && verdict.confidence < config.oneStepMinConfidence)
+  if (!force && Math.abs(gap) === 1 && verdict.confidence < config.oneStepMinConfidence)
     return { advice: null, why: `1段階差で確信度 ${verdict.confidence} が閾値 ${config.oneStepMinConfidence} 未満` }
 
   const direction = gap > 0 ? 'up' : 'down'
@@ -218,6 +224,7 @@ export function buildAdvice(
     `理由：${reason}`,
     `${direction === 'up' ? '上げると' : '下げると'}：${benefit}`,
     `このままだと：${risk}`,
+    ...(force && inRange ? [`補足：現在の ${current} も推奨範囲内です（確信度 ${verdict.confidence}）`] : []),
   ].join('\n')
 
   return { advice: { from: current, to, direction, headline, reason, benefit, risk, message }, why: '提案する' }
